@@ -3,8 +3,9 @@ open Unix
 open List
 open String
 
-let header = "header" |> (^) "/.cache/" |> (^) (getenv "HOME")
-let table  = "table" |> (^) "/.cache/" |> (^) (getenv "HOME")
+let home_cache = "/.cacha/" |> (^) (getenv "HOME")
+let header = "header" |> (^) home_cache
+let table  = "table" |> (^) home_cache
 
 let str_regex = Str.regexp_string
 
@@ -96,14 +97,17 @@ let get_kern_version uname_c =
   input_line uname_c |> split_on_char '.' |> cat_heads |> cat "v"
 
 let load_table kern_v =
-  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_v ^ "/arch/x86/entry/syscalls/syscall_64.tbl -O ~/.cache/table" ^ kern_v
+  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_v ^ "/arch/x86/entry/syscalls/syscall_64.tbl -O " ^ table ^ kern_v
   |> command 
 
 let load_header kern_v =
-  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_v ^ "/include/linux/syscalls.h -O ~/.cache/header" ^ kern_v
+  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_v ^ "/include/linux/syscalls.h -O " ^ header ^ kern_v
   |> command
   
 let load_cache kern_v =
+  if file_exists home_cache |> not
+  then mkdir home_cache 0o755 ;
+  
   let res = match (header ^ kern_v |> file_exists, table ^ kern_v |> file_exists) with
   | (true, true) -> 0
   | (true, false) -> load_table kern_v
@@ -121,12 +125,12 @@ let clean c_in res =
   close_in c_in ;
   Ok res
 
-let seescall () =
-  let header_c = open_in header in
+let seescall kern_vers =
+  let header_c = open_in (header ^ kern_vers) in
 
   let res =
     get_args argv
-    >>= get_call_name table  
+    >>= get_call_name (table ^ kern_vers)  
     >>= lookup_syscall header_c 
     >>= load_lines header_c
     >>= clean header_c
@@ -141,6 +145,6 @@ let () =
   let _ = Unix.close_process_in uname_c in
 
   match load_cache kern_vers with
-  | Ok () -> seescall ()
+  | Ok () -> seescall kern_vers
   | Error err -> perror err
  

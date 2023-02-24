@@ -1,0 +1,4 @@
+**** seescall <call name // call number>
+
+user@host$ *seescall shmat*
+30 asmlinkage long sys_shmat(int shmid, char __user *shmaddr, int shmflg);
