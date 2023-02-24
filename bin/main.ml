@@ -3,8 +3,8 @@ open Unix
 open List
 open String
 
-let header = "/home/slamko/.cache/header"
-let table = "/home/slamko/.cache/table"
+let header = "header" |> (^) "/.cache/" |> (^) (getenv "HOME")
+let table  = "table" |> (^) "/.cache/" |> (^) (getenv "HOME")
 
 let str_regex = Str.regexp_string
 
@@ -14,8 +14,8 @@ let (>>=) f n = match f with
 
 let search_f search line =
   try
-    let res = Str.search_forward search line 0 in
-    Some res
+    let pos = Str.search_forward search line 0 in
+    Some pos
   with Not_found -> None
 
 let parse_lines all_lines =
@@ -36,7 +36,7 @@ let parse_lines all_lines =
 let load_lines header_c line =
   let rec load all_lines =
     match parse_lines all_lines with
-    | h::_ -> Ok all_lines
+    | _::_ -> Ok all_lines
     | [] ->
        try
          (input_line header_c)
@@ -53,14 +53,25 @@ let search_line table_c scall_name_reg =
     try
       let line = input_line table_c in
       begin
-        try
-          Str.search_forward scall_name line 0 |> ignore;
-          Ok (line)
-        with Not_found -> read_line scall_name end
+        match search_f scall_name line with
+        | Some _ -> Ok line
+        | None -> read_line scall_name end
     with End_of_file ->
       close_in table_c;
       Error "Syscall not found" in
   scall_name_reg  |> str_regex |> read_line
+
+let lookup_syscall table_c scall_name =
+  let rec lookup () =
+    match search_line table_c scall_name with
+    | Ok line ->
+       let str_i = Str.search_forward (str_regex scall_name) line 0 in
+       begin match line.[str_i + length scall_name] with
+       | '(' -> Ok line
+       | _ -> lookup () end
+    | Error err -> Error err in
+
+  lookup ()
 
 let get_call_name table_file scall_name =
   let table_c = open_in table_file
@@ -76,26 +87,60 @@ let get_call_name table_file scall_name =
 let get_args argv =
   match Array.length argv with
   | 2 -> Ok argv.(1)
-  | _ -> Error "invalid args number, syscall name expected"
+  | _ -> Error "invalid args number, syscall name or number expected"
 
 let cat_heads (str_l : string list) =
   tl str_l |> hd |> cat "." |> cat (hd str_l) 
 
-let () =
-  let uname_c = Unix.open_process_in "uname -r" in
-  let kern_vers = input_line uname_c |> split_on_char '.' |> cat_heads |> cat "v" in
+let get_kern_version uname_c =
+  input_line uname_c |> split_on_char '.' |> cat_heads |> cat "v"
 
-  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_vers ^ "/include/linux/syscalls.h -O ~/.cache/header" |> command |> ignore ;
-  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_vers ^ "/arch/x86/entry/syscalls/syscall_64.tbl -O ~/.cache/table" |> command |> ignore ;
+let load_table kern_v =
+  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_v ^ "/arch/x86/entry/syscalls/syscall_64.tbl -O ~/.cache/table" ^ kern_v
+  |> command 
 
+let load_header kern_v =
+  "wget -q https://raw.githubusercontent.com/torvalds/linux/" ^ kern_v ^ "/include/linux/syscalls.h -O ~/.cache/header" ^ kern_v
+  |> command
+  
+let load_cache kern_v =
+  let res = match (header ^ kern_v |> file_exists, table ^ kern_v |> file_exists) with
+  | (true, true) -> 0
+  | (true, false) -> load_table kern_v
+  | (false, true) -> load_header kern_v
+  | (false, false) -> (load_table kern_v) + (load_header kern_v) in
+
+  match res with
+  | 0 -> Ok ()
+  | _ -> Error "failed to fetch the kernel data"
+  
+let perror err =
+  Printf.eprintf "error: %s\n" err
+
+let clean c_in res =
+  close_in c_in ;
+  Ok res
+
+let seescall () =
   let header_c = open_in header in
 
   let res =
     get_args argv
     >>= get_call_name table  
-    >>= search_line header_c 
+    >>= lookup_syscall header_c 
     >>= load_lines header_c
+    >>= clean header_c
 
   in match res with
      | Ok call_str -> print_endline call_str
-     | Error err -> Printf.eprintf "error: %s\n" err
+     | Error err -> perror err
+
+let () =
+  let uname_c = Unix.open_process_in "uname -r" in
+  let kern_vers = get_kern_version uname_c in
+  let _ = Unix.close_process_in uname_c in
+
+  match load_cache kern_vers with
+  | Ok () -> seescall ()
+  | Error err -> perror err
+ 
